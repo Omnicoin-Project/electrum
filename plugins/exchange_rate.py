@@ -447,8 +447,8 @@ class Plugin(BasePlugin):
     def close(self):
         self.exchanger.stop()
         self.exchanger = None
-        self.win.tabs.removeTab(1)
-        self.win.tabs.insertTab(1, self.win.create_send_tab(), _('Send'))
+        self.send_fiat_e.hide()
+        self.receive_fiat_e.hide()
         self.win.update_status()
 
     def set_currencies(self, currency_options):
@@ -499,9 +499,9 @@ class Plugin(BasePlugin):
     @hook
     def load_wallet(self, wallet):
         tx_list = {}
-        for item in self.wallet.get_tx_history(self.wallet.storage.get("current_account", None)):
-            tx_hash, conf, is_mine, value, fee, balance, timestamp = item
-            tx_list[tx_hash] = {'value': value, 'timestamp': timestamp, 'balance': balance}
+        for item in self.wallet.get_history(self.wallet.storage.get("current_account", None)):
+            tx_hash, conf, value, timestamp, balance = item
+            tx_list[tx_hash] = {'value': value, 'timestamp': timestamp }
 
         self.tx_list = tx_list
         self.cur_exchange = self.config.get('use_exchange', "Blockchain")
@@ -572,20 +572,21 @@ class Plugin(BasePlugin):
             except Exception:
                 newtx = self.wallet.get_tx_history()
                 v = newtx[[x[0] for x in newtx].index(str(item.data(0, Qt.UserRole).toPyObject()))][3]
-                tx_info = {'timestamp':int(time.time()), 'value': v }
+                tx_info = {'timestamp':int(time.time()), 'value': v}
                 pass
             tx_time = int(tx_info['timestamp'])
+            tx_value = Decimal(str(tx_info['value'])) / 100000000
             if self.cur_exchange == "CoinDesk":
                 tx_time_str = datetime.datetime.fromtimestamp(tx_time).strftime('%Y-%m-%d')
                 try:
-                    tx_fiat_val = "%.2f %s" % (Decimal(str(tx_info['value'])) / 100000000 * Decimal(self.resp_hist['bpi'][tx_time_str]), "USD")
+                    tx_fiat_val = "%.2f %s" % (value * Decimal(self.resp_hist['bpi'][tx_time_str]), "USD")
                 except KeyError:
                     tx_fiat_val = "%.2f %s" % (self.btc_rate * Decimal(str(tx_info['value']))/100000000 , "USD")
             elif self.cur_exchange == "Winkdex":
                 tx_time_str = datetime.datetime.fromtimestamp(tx_time).strftime('%Y-%m-%d') + "T16:00:00-04:00"
                 try:
                     tx_rate = self.resp_hist[[x['timestamp'] for x in self.resp_hist].index(tx_time_str)]['price']
-                    tx_fiat_val = "%.2f %s" % (Decimal(tx_info['value']) / 100000000 * Decimal(tx_rate)/Decimal("100.0"), "USD")
+                    tx_fiat_val = "%.2f %s" % (tx_value * Decimal(tx_rate)/Decimal("100.0"), "USD")
                 except ValueError:
                     tx_fiat_val = "%.2f %s" % (self.btc_rate * Decimal(tx_info['value'])/100000000 , "USD")
                 except KeyError:
@@ -594,7 +595,7 @@ class Plugin(BasePlugin):
                 tx_time_str = datetime.datetime.fromtimestamp(tx_time).strftime('%Y-%m-%d')
                 try:
                     num = self.resp_hist[tx_time_str].replace(',','')
-                    tx_fiat_val = "%.2f %s" % (Decimal(str(tx_info['value'])) / 100000000 * Decimal(num), self.fiat_unit())
+                    tx_fiat_val = "%.2f %s" % (tx_value * Decimal(num), self.fiat_unit())
                 except KeyError:
                     tx_fiat_val = _("No data")
 
@@ -604,9 +605,6 @@ class Plugin(BasePlugin):
             if Decimal(str(tx_info['value'])) < 0:
                 item.setForeground(5, QBrush(QColor("#BC1E1E")))
 
-        for i, width in enumerate(self.win.column_widths['history']):
-            self.win.history_list.setColumnWidth(i, width)
-        self.win.history_list.setColumnWidth(4, 140)
         self.win.history_list.setColumnWidth(5, 120)
         self.win.is_edit = False
 
@@ -737,18 +735,18 @@ class Plugin(BasePlugin):
         return self.config.get("currency", "EUR")
 
     def add_send_edit(self):
-        fiat_e = AmountEdit(self.fiat_unit)
+        self.send_fiat_e = AmountEdit(self.fiat_unit)
         btc_e = self.win.amount_e
         fee_e = self.win.fee_e
-        self.connect_fields(btc_e, fiat_e, fee_e)
-        self.win.send_grid.addWidget(fiat_e, 4, 3, Qt.AlignHCenter)
-        btc_e.frozen.connect(lambda: fiat_e.setFrozen(btc_e.isReadOnly()))
+        self.connect_fields(btc_e, self.send_fiat_e, fee_e)
+        self.win.send_grid.addWidget(self.send_fiat_e, 4, 3, Qt.AlignHCenter)
+        btc_e.frozen.connect(lambda: self.send_fiat_e.setFrozen(btc_e.isReadOnly()))
 
     def add_receive_edit(self):
-        fiat_e = AmountEdit(self.fiat_unit)
+        self.receive_fiat_e = AmountEdit(self.fiat_unit)
         btc_e = self.win.receive_amount_e
-        self.connect_fields(btc_e, fiat_e, None)
-        self.win.receive_grid.addWidget(fiat_e, 2, 3, Qt.AlignHCenter)
+        self.connect_fields(btc_e, self.receive_fiat_e, None)
+        self.win.receive_grid.addWidget(self.receive_fiat_e, 2, 3, Qt.AlignHCenter)
 
     def connect_fields(self, btc_e, fiat_e, fee_e):
         def fiat_changed():
@@ -765,6 +763,8 @@ class Plugin(BasePlugin):
                 if fee_e: self.win.update_fee(False)
         fiat_e.textEdited.connect(fiat_changed)
         def btc_changed():
+            if self.exchanger is None:
+                return
             btc_amount = btc_e.get_amount()
             if btc_amount is None:
                 fiat_e.setText("")
